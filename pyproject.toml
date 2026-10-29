@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aqc"
+version = "0.1.0"
+requires-python = ">=3.10"
+# e2-tools, slm-client and e2-style are installed from their local checkouts
+# (~/Documents/e2-tools, ~/Documents/slm-client, ~/Documents/e2-style), not from PyPI.
+dependencies = ["numpy", "pypylon"]
+
+[tool.setuptools.packages.find]
+include = ["aqc*"]
