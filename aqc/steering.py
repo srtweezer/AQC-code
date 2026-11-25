@@ -1,4 +1,4 @@
-"""Steering the tweezer array with CH3: constant tones, and every trap tracked over a CH3 sweep.
+"""Steering the tweezer array with the AODs: constant tones, and every trap tracked over a sweep of CH3 or CH1.
 
 Functions take the open AWG (from aqc.hardware.awg.aods) and camera, so importing this
 module does not load libspcm.
@@ -7,19 +7,20 @@ module does not load libspcm.
 import numpy as np
 
 from aqc import config
+from aqc.aod_amplitude import ch1_scale, ch3_scale
 from aqc.tones import multitone
-from aqc.traps import fit_all
+from aqc.traps import SPOT_FRAC, find_traps, fit_all, fit_spots
 
 F_CENTER = 70e6          # Hz, CH1 always; CH3 for the reference frames
 NB_SAMPLES = 200_000
 
 
-def play(awg, f3, scale=1.0):
-    """CH1 at 70 MHz, CH3 at f3 (snapped to the 3.125 kHz buffer grid) times scale; returns the snapped f3."""
-    ch1, _ = multitone([F_CENTER], NB_SAMPLES, config.AWG_SAMPLING_RATE)
+def play(awg, f3, scale=1.0, f1=F_CENTER, scale1=1.0):
+    """CH1 at f1 times scale1, CH3 at f3 times scale (both snapped to the 3.125 kHz buffer grid); returns the snapped f3."""
+    ch1, _ = multitone([f1], NB_SAMPLES, config.AWG_SAMPLING_RATE)
     ch3, (f3,) = multitone([f3], NB_SAMPLES, config.AWG_SAMPLING_RATE)
     awg.stop()
-    awg.load_waveform(np.stack([ch1, scale * ch3]), -1)
+    awg.load_waveform(np.stack([scale1 * ch1, scale * ch3]), -1)
     awg.force_trigger()
     return f3
 
@@ -28,8 +29,35 @@ def grab(cam, n):
     return np.mean([cam.grab().astype(float) for _ in range(n)], axis=0)
 
 
-def sweep_ch3(awg, cam, p0, offs, average):
-    """Displacement (len(offs), N, 2) in (y, x) px of traps p0 (N, 2), fitted at 70 MHz, at CH3 = 70 + offs MHz.
+def play_transport(awg, f, vertical, df3=0.0, df1=0.0):
+    """Transport channel at f (Hz), flattened by aqc.aod_amplitude, the other at 70 MHz unscaled; returns the snapped f.
+
+    CH1 carries the vertical 90x10 array, CH3 the horizontal one. df3, df1 (Hz, multiples
+    of the 3.125 kHz grid) shift CH3 and CH1 on top, as the blade scan does; the
+    flattening follows the shifted tone.
+    """
+    if vertical:
+        play(awg, F_CENTER + df3, f1=f + df1, scale1=float(ch1_scale(f + df1)))
+        return multitone([f], NB_SAMPLES, config.AWG_SAMPLING_RATE)[1][0]
+    return play(awg, f + df3, float(ch3_scale(f + df3)), f1=F_CENTER + df1) - df3
+
+
+def fit_array(cam, nv, nh, average, spot_frac=SPOT_FRAC):
+    """Averaged frame and the Gaussian fits (nv * nh, 5) (aqc.traps.fit_spots) of its traps, in camera order.
+
+    spot_frac: see aqc.traps.find_traps (an unhomogenized vertical array needs ~0.1).
+    """
+    frame = grab(cam, average)
+    pts, r, c = find_traps(frame, nv, nh, spot_frac)
+    guess = np.empty((nv, nh, 2))
+    guess[r, c] = pts
+    return frame, fit_spots(frame, guess.reshape(-1, 2))
+
+
+def sweep(awg, cam, p0, offs, average, channel):
+    """Displacement (len(offs), N, 2) in (y, x) px of traps p0 (N, 2), fitted at 70 MHz, at CH<channel> = 70 + offs MHz.
+
+    channel is 3 or 1; the other channel stays at 70 MHz.
 
     Steps outward from 70 MHz on each side, predicting each trap from the last two
     points, so no trap is ever matched to its neighbour. Before every point a 70 MHz
@@ -45,7 +73,11 @@ def sweep_ch3(awg, cam, p0, offs, average):
         for i in side:
             play(awg, F_CENTER)
             refs[i] = fit_all(grab(cam, average), p0)
-            play(awg, F_CENTER + offs[i] * 1e6)
+            f = F_CENTER + offs[i] * 1e6
+            if channel == 3:
+                play(awg, f)
+            else:
+                play(awg, F_CENTER, f1=f)
             guess = track[prev] if prev2 is None else (
                 track[prev] + (track[prev] - track[prev2]) * (offs[i] - offs[prev]) / (offs[prev] - offs[prev2]))
             track[i] = fit_all(grab(cam, average), guess)

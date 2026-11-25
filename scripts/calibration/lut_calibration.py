@@ -23,9 +23,9 @@ extrema to its own end levels, so the zero order is never needed.
     at the start and end of the sweep to check the source is stable.
 
 The result is valid only for the controller LUT slm-server has loaded. Writes
-data/<stamp>_phase_response.npz, in the same format as config.SLM_PHASE_RESPONSE.
+data/<MM_DD>/<stamp>_phase_response.npz, in the same format as config.SLM_PHASE_RESPONSE.
 It is not installed: to use it, copy it to aqc/calibration/ and point
-config.SLM_PHASE_RESPONSE at it. Also writes data/<stamp>_lut_calibration.png.
+config.SLM_PHASE_RESPONSE at it. Also writes data/<MM_DD>/<stamp>_lut_calibration.png.
 Leaves the last calibration grating on the SLM.
 
 Usage:
@@ -36,7 +36,6 @@ Usage:
 import argparse
 import time
 from datetime import datetime
-from pathlib import Path
 
 import e2style as e2
 import matplotlib.pyplot as plt
@@ -45,10 +44,10 @@ from scipy.ndimage import gaussian_filter
 
 from aqc import config
 from aqc.blaze import blaze
+from aqc.data import data_path, save_plot
 from aqc.hardware.camera import Camera
 from aqc.hardware.slm import phase_to_gray, send_gray
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 FULL_SCALE = 4095            # Mono12
 GRATING_PERIOD_PX = 8
 PATCH_FRAC = 0.125           # linear fraction of the SLM covered by the grating
@@ -186,9 +185,8 @@ n_sat = int((peaks >= FULL_SCALE).sum())
 if n_sat:
     print(f"  ** {n_sat}/{len(grays)} levels saturated in the ROI **")
 
-DATA_DIR.mkdir(exist_ok=True)
 zoom = roi(end, center, 3 * args.roi)
-response = DATA_DIR / f"{stamp}_phase_response.npz"
+response = data_path("phase_response.npz", stamp)
 np.savez(response, gray=grays.astype(np.float64), dphi=dphi, I1_sum=intensity, I1_peak=peaks,
          exposure=exposure, full_scale=FULL_SCALE, center=np.array(center), roi=args.roi, zoom=zoom,
          drift=drift, ref=args.ref, period=GRATING_PERIOD_PX, frac=PATCH_FRAC)
@@ -226,5 +224,4 @@ ax[1, 1].set_ylabel("measured - current [$\\pi$ rad]")
 ax[1, 1].set_title("difference from the current phase response")
 ax[1, 1].grid(alpha=0.3)
 fig.suptitle(f"SLM phase response {stamp}")
-plot = DATA_DIR / f"{stamp}_lut_calibration.png"
-e2.save(fig, plot, dpi=300, transparent=False)
+save_plot(fig, "lut_calibration", stamp)

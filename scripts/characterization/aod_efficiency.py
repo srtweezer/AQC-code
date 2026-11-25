@@ -17,7 +17,7 @@ curve checks that calibration (flat when it holds).
 Setup: the SLM beam imaged onto the Basler (free-run), AODs on CH1/CH3 at 1.6 V peak.
 Nothing else may hold the AWG (stop aod_tone.py first).
 
-Saves data/<timestamp>_aod_efficiency.png. Leaves the AWG stopped.
+Saves data/<MM_DD>/<timestamp>_aod_efficiency.png. Leaves the AWG stopped.
 
 Usage:
     python scripts/characterization/aod_efficiency.py --exposure-us 105
@@ -26,21 +26,19 @@ Usage:
 """
 
 import argparse
-from datetime import datetime
-from pathlib import Path
 
 import e2style as e2
 import matplotlib.pyplot as plt
 import numpy as np
 
 from aqc import config
+from aqc.data import save_plot
 from aqc.hardware.awg import aods
 from aqc.hardware.camera import Camera
 from aqc.aod_amplitude import ch3_scale
 from aqc.intensity import integrated, spot_box
 from aqc.steering import F_CENTER, grab, play
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 AMPLITUDE = 1.6          # V peak, the CW drive of aod_tone.py
 PAD_PX = 100             # box margin beyond the spot; one site moves it ~28 px
 
@@ -80,5 +78,4 @@ sec = ax.secondary_xaxis("top", functions=(lambda f: (f - F_CENTER / 1e6) / conf
 sec.set_xlabel("sites from 70 MHz")
 ax.set_title(f"{'CH3 flattened (aqc.aod_amplitude), ' if args.flat else ''}CH1 70 MHz, exposure {args.exposure_us:g} µs, {args.average}-frame average; "
              f"range {power.min() / p70:.3f}-{power.max() / p70:.3f} × 70 MHz")
-DATA_DIR.mkdir(exist_ok=True)
-e2.save(fig, DATA_DIR / f"{datetime.now():%Y%m%d_%H%M%S}_aod_efficiency.png", dpi=300, transparent=False)
+save_plot(fig, "aod_efficiency")

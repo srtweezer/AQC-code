@@ -1,8 +1,9 @@
-"""Calibrate a per-frequency CH3 amplitude scale that makes the power the AODs pass flat.
+"""Calibrate a per-frequency CH3 (or CH1) amplitude scale that makes the power the AODs pass flat.
 
 The SLM shows a defocused blaze (one large spot that never saturates; the tweezer array
 gives the same efficiency curve). CH1 is held at 70 MHz and CH3 steps over
---f-min..--f-max. At each frequency the spot's integrated intensity (aqc.intensity:
+--f-min..--f-max. With --channel 1 the roles swap: CH3 is held at 70 MHz (unscaled) and
+CH1 steps. At each frequency the spot's integrated intensity (aqc.intensity:
 counts/us summed over a fixed box) measures the power passed.
 
 Pass 0 runs at full drive (scale 1). The weakest frequency is the anchor: it keeps scale
@@ -17,13 +18,14 @@ Setup: the SLM beam imaged onto the Basler (free-run), AODs on CH1/CH3 at 1.6 V 
 Nothing else may hold the AWG (stop aod_tone.py first). Pick an exposure that keeps the
 brightest frequency (~67.7 MHz) below saturation at full drive.
 
-On convergence saves aqc/calibration/<timestamp>_ch3_amplitude.npz and points
-config.CH3_AMPLITUDE_CAL at it; always saves data/<timestamp>_aod_amplitude.png. Leaves
+On convergence saves aqc/calibration/<timestamp>_ch<channel>_amplitude.npz and points
+config.CH<channel>_AMPLITUDE_CAL at it; always saves data/<MM_DD>/<timestamp>_aod_amplitude.png. Leaves
 the defocused blaze on the SLM and the AWG stopped.
 
 Usage:
     python scripts/calibration/aod_amplitude.py --exposure-us 105
     python scripts/calibration/aod_amplitude.py --exposure-us 105 --f-min 64 --f-max 76
+    python scripts/calibration/aod_amplitude.py --exposure-us 105 --channel 1
 """
 
 import argparse
@@ -37,6 +39,7 @@ import numpy as np
 
 from aqc import config
 from aqc.blaze import blaze
+from aqc.data import save_plot
 from aqc.hardware.awg import aods
 from aqc.hardware.camera import Camera
 from aqc.hardware.slm import send_phase
@@ -44,7 +47,6 @@ from aqc.intensity import integrated, spot_box
 from aqc.lens import defocus
 from aqc.steering import F_CENTER, grab, play
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 AMPLITUDE = 1.6          # V peak, the CW drive of aod_tone.py
 DEFOCUS_WAVES = 10
 BLAZE_Y_PX = 6
@@ -52,9 +54,10 @@ PAD_PX = 100             # box margin; 10 MHz moves the spot ~49 px
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument("--exposure-us", type=float, required=True, help="camera exposure, us")
-parser.add_argument("--f-min", type=float, default=60.0, help="CH3 band start, MHz")
-parser.add_argument("--f-max", type=float, default=80.0, help="CH3 band end, MHz")
-parser.add_argument("--f-step", type=float, default=0.5, help="CH3 grid step, MHz")
+parser.add_argument("--channel", type=int, choices=(1, 3), default=3, help="AOD channel to calibrate")
+parser.add_argument("--f-min", type=float, default=60.0, help="band start, MHz")
+parser.add_argument("--f-max", type=float, default=80.0, help="band end, MHz")
+parser.add_argument("--f-step", type=float, default=0.5, help="grid step, MHz")
 parser.add_argument("--average", type=int, default=8, help="frames averaged per point")
 parser.add_argument("--iterations", type=int, default=4, help="correction passes after pass 0")
 parser.add_argument("--tol", type=float, default=0.02, help="max |I / I_anchor - 1| to stop")
@@ -64,10 +67,13 @@ freqs = np.round(np.arange(args.f_min, args.f_max + args.f_step / 2, args.f_step
 
 
 def sweep(awg, cam, box, scale):
-    """Integrated intensity (counts/us) at every grid frequency, CH3 scaled by scale."""
+    """Integrated intensity (counts/us) at every grid frequency, the calibrated channel scaled by scale."""
     out = np.empty(len(freqs))
     for i, (f, s) in enumerate(zip(freqs, scale)):
-        play(awg, f * 1e6, s)
+        if args.channel == 3:
+            play(awg, f * 1e6, s)
+        else:
+            play(awg, F_CENTER, f1=f * 1e6, scale1=s)
         out[i] = integrated(grab(cam, args.average), box, args.exposure_us)
     return out
 
@@ -97,18 +103,19 @@ stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
 if converged:
     print(f"Flat to {err:.1%} over {args.f_min:g}-{args.f_max:g} MHz at {level:.3f} x the full-drive "
           f"70 MHz power")
-    cal_path = Path(config.__file__).parent / "calibration" / f"{stamp}_ch3_amplitude.npz"
+    cal_path = Path(config.__file__).parent / "calibration" / f"{stamp}_ch{args.channel}_amplitude.npz"
     np.savez(cal_path, f_hz=freqs * 1e6, scale=scale, intensity_pass0=passes[0], intensity_final=passes[-1],
-             anchor_hz=freqs[anchor] * 1e6, exposure_us=args.exposure_us, ch3_amplitude_v=AMPLITUDE,
-             ch1_hz=F_CENTER, date=stamp)
+             anchor_hz=freqs[anchor] * 1e6, exposure_us=args.exposure_us, channel=args.channel,
+             amplitude_v=AMPLITUDE, other_channel_hz=F_CENTER, date=stamp)
     config_path = Path(config.__file__)
-    line = (f'CH3_AMPLITUDE_CAL = Path(__file__).parent / "calibration" / "{cal_path.name}"'
+    name = f"CH{args.channel}_AMPLITUDE_CAL"
+    line = (f'{name} = Path(__file__).parent / "calibration" / "{cal_path.name}"'
             f"  # {datetime.now():%Y-%m-%d}")
-    text, n = re.subn(r"^CH3_AMPLITUDE_CAL = .*$", line, config_path.read_text(), flags=re.M)
+    text, n = re.subn(rf"^{name} = .*$", line, config_path.read_text(), flags=re.M)
     if n != 1:
-        raise RuntimeError(f"expected one CH3_AMPLITUDE_CAL line in {config_path}, found {n}")
+        raise RuntimeError(f"expected one {name} line in {config_path}, found {n}")
     config_path.write_text(text)
-    print(f"Saved {cal_path}; config.CH3_AMPLITUDE_CAL points at it")
+    print(f"Saved {cal_path}; config.{name} points at it")
 else:
     print(f"Not flat to {args.tol:.0%} after {args.iterations} correction passes (max deviation {err:.3f}); "
           f"nothing saved")
@@ -127,8 +134,7 @@ ax.set_title(f"{'converged' if converged else 'NOT converged'}: max deviation {e
              f"anchor {freqs[anchor]:g} MHz, exposure {args.exposure_us:g} µs")
 ax.legend(frameon=True, facecolor="white", framealpha=0.9)
 ax2.plot(freqs, scale, "o-", ms=2, lw=0.8, color=e2.OKABE_ITO["blue"])
-ax2.set_xlabel("CH3 frequency (MHz)")
-ax2.set_ylabel("CH3 amplitude scale")
-fig.suptitle(f"CH3 amplitude calibration, CH1 70 MHz, {AMPLITUDE:g} V peak")
-DATA_DIR.mkdir(exist_ok=True)
-e2.save(fig, DATA_DIR / f"{stamp}_aod_amplitude.png", dpi=300, transparent=False)
+ax2.set_xlabel(f"CH{args.channel} frequency (MHz)")
+ax2.set_ylabel(f"CH{args.channel} amplitude scale")
+fig.suptitle(f"CH{args.channel} amplitude calibration, CH{4 - args.channel} 70 MHz, {AMPLITUDE:g} V peak")
+save_plot(fig, "aod_amplitude", stamp)

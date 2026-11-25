@@ -48,6 +48,11 @@ class Camera:
             cam.LineDebouncerTime.Value = 0.0   # don't swallow short AWG pulses
         cam.TriggerMode.Value = "On" if self.hardware_trigger else "Off"
 
+    @property
+    def readout_us(self):
+        """Sensor readout time, us. The shutter is rolling: the last row starts exposing this long after the first."""
+        return self._cam.SensorReadoutTime.Value
+
     def set_exposure(self, exposure_us):
         self._cam.ExposureTime.Value = exposure_us
         self.exposure_us = exposure_us
